@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --port 5000 --host 0.0.0.0",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview --port 5000 --host 0.0.0.0"
   },
   "dependencies": {
     "@react-three/drei": "^9.109.2",
