@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useRef, useState, useCallback, Component } from 'react'
 import { Canvas, useThree, useFrame } from '@react-three/fiber'
-import { useGLTF } from '@react-three/drei'
+import { useGLTF, Html } from '@react-three/drei'
 import * as THREE from 'three'
 
 useGLTF.preload('/egyptian_city.glb')
@@ -198,27 +198,70 @@ function Scene({ onLoad, onSceneReady }) {
   return <primitive object={scene} />
 }
 
+// ─── Egyptian waypoint names (cycling) ───────────────────────────────────────
+const WAYPOINT_NAMES = [
+  'Sphinx Gate', 'Temple of Ra', 'Pharaoh\'s Road', 'Nile Bazaar',
+  'Obelisk Square', 'Anubis Path', 'Isis Courtyard', 'Osiris Way',
+  'Horus Street', 'Cleopatra Avenue', 'Ramesses Plaza', 'Karnak Passage',
+  'Luxor Lane', 'Sacred Scarab Rd', 'Valley of Kings', 'Amun Quarter',
+  'Papyrus Market', 'Crocodile Alley', 'Golden Throne St', 'Nefertiti Walk',
+  'Desert Wind Rd', 'Pyramid Gate', 'Lotus Pond Path', 'Sobek Shrine Rd',
+  'Bastet Temple Way', 'Thoth Library Ln', 'Eye of Horus St', 'Ankh Cross Rd',
+  'Sarcophagus Sq', 'Hieroglyph Alley', 'Mentuhotep Rd', 'Hathor Temple Ln',
+  'Sundisc Circle', 'Canopic Way', 'Heliopolis Blvd', 'Memphis Road',
+  'Thebes Passage', 'Rosetta Path', 'Apis Bull Lane', 'Aten Shrine Rd',
+]
+
 // ─── Waypoint markers ─────────────────────────────────────────────────────────
 function WaypointMarkers({ waypoints, hoveredIdx, activePathIdx }) {
   if (!waypoints.length) return null
   return (
     <group>
       {waypoints.map(({ pos }, i) => {
-        const isH = i === hoveredIdx
-        const isA = i === activePathIdx
-        const r   = isH ? 3.8 : 2.4
-        const col = isA ? '#ffff00' : isH ? '#ffffff' : '#ffcc44'
-        const op  = isH ? 0.95 : 0.5
+        const isH  = i === hoveredIdx
+        const isA  = i === activePathIdx
+        const r    = isH ? 3.8 : 2.4
+        const col  = isA ? '#ffff00' : isH ? '#ffffff' : '#ffcc44'
+        const op   = isH ? 0.95 : 0.5
+        const name = WAYPOINT_NAMES[i % WAYPOINT_NAMES.length]
         return (
           <group key={i} position={[pos.x, pos.y + 0.3, pos.z]}>
+            {/* Ring */}
             <mesh rotation={[-Math.PI / 2, 0, 0]}>
               <ringGeometry args={[r * 0.6, r, 28]} />
               <meshBasicMaterial color={col} transparent opacity={op} depthTest={false} />
             </mesh>
+            {/* Dot */}
             <mesh rotation={[-Math.PI / 2, 0, 0]}>
               <circleGeometry args={[r * 0.22, 14]} />
               <meshBasicMaterial color={col} transparent opacity={op + 0.2} depthTest={false} />
             </mesh>
+            {/* Floating name label */}
+            <Html
+              center
+              position={[0, r * 1.6, 0]}
+              distanceFactor={80}
+              zIndexRange={[0, 10]}
+              style={{ pointerEvents: 'none' }}
+            >
+              <div style={{
+                background: isH ? 'rgba(255,200,60,0.95)' : 'rgba(0,0,0,0.65)',
+                color:      isH ? '#1a0a00' : '#ffcc88',
+                fontFamily: 'sans-serif',
+                fontSize:   isH ? '13px' : '11px',
+                fontWeight: isH ? 700 : 500,
+                padding:    '3px 8px',
+                borderRadius: 5,
+                border: `1px solid ${isH ? '#ffaa00' : 'rgba(255,200,100,0.3)'}`,
+                whiteSpace: 'nowrap',
+                opacity: isH ? 1 : 0.8,
+                transition: 'all 0.15s',
+                textAlign: 'center',
+                letterSpacing: '0.02em',
+              }}>
+                {name}
+              </div>
+            </Html>
           </group>
         )
       })}
