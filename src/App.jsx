@@ -29,27 +29,17 @@ function City() {
 
   useEffect(() => {
     if (!groupRef.current) return
-
-    // Compute exact bounding box of the loaded model
     const box = new THREE.Box3().setFromObject(groupRef.current)
     const size = new THREE.Vector3()
     const center = new THREE.Vector3()
     box.getSize(size)
     box.getCenter(center)
-
     const maxDim = Math.max(size.x, size.y, size.z)
 
-    // Move model: center at origin, base on Y=0
-    groupRef.current.position.set(
-      -center.x,
-      -box.min.y,
-      -center.z
-    )
+    groupRef.current.position.set(-center.x, -box.min.y, -center.z)
 
-    // Fit camera to see the whole model
     const fov = camera.fov * (Math.PI / 180)
     const camDist = (maxDim / 2) / Math.tan(fov / 2) * 1.6
-
     camera.position.set(camDist * 0.7, camDist * 0.5, camDist * 0.7)
     camera.near = maxDim * 0.001
     camera.far = maxDim * 100
@@ -78,20 +68,12 @@ export default function App() {
       gl={{ antialias: true, failIfMajorPerformanceCaveat: false, powerPreference: 'low-power' }}
       camera={{ position: [100, 60, 100], fov: 50, near: 0.01, far: 100000 }}
     >
-      {/* Minimal lights — GLB has no embedded lights */}
       <ambientLight intensity={1.5} />
       <directionalLight position={[1, 2, 1]} intensity={2} />
-
       <Suspense fallback={<Loader />}>
         <City />
       </Suspense>
-
-      <OrbitControls
-        makeDefault
-        enableDamping
-        dampingFactor={0.05}
-        maxPolarAngle={Math.PI * 0.88}
-      />
+      <OrbitControls makeDefault enableDamping dampingFactor={0.05} maxPolarAngle={Math.PI * 0.88} />
     </Canvas>
   )
 }
