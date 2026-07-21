@@ -12,16 +12,133 @@ const SPAWN_BUFFER        = -20
 const EYE_HEIGHT_FRACTION = 0.20
 const WALK_SPEED_FRACTION = 0.35
 const MOUSE_SENSITIVITY   = 0.004
-const SCROLL_ZOOM_SPEED   = 0.4
-const WAYPOINT_GRID       = 28          // NxN grid for road detection
-const ROAD_Y_THRESHOLD    = 0.12        // hit y < this fraction of model height = ground/road
-const FLY_SPEED           = 0.06        // lerp factor for fly-to
+const ROAD_Y_THRESHOLD    = 0.14   // fraction of model height → ground = road
+const GRID_RES            = 72     // NxN walkable grid resolution
+const PATH_SPEED          = 0.055  // lerp speed while following path
+const YAW_LERP            = 0.07   // how fast camera turns on road bends
 // ─────────────────────────────────────────────────────────────────────────────
 
-let g_eyeHeight = 10
-let g_walkSpeed = 80
-let g_bounds    = null
-let g_sceneRef  = null   // THREE.Object3D — for raycasting after load
+let g_eyeHeight  = 10
+let g_walkSpeed  = 80
+let g_bounds     = null
+let g_modelSize  = new THREE.Vector3()
+let g_sceneObj   = null
+
+// ─── Walkable Grid ────────────────────────────────────────────────────────────
+// Returns { grid:Uint8Array, cols, rows, waypoints:Vector3[] }
+function buildNavData(scene, bounds, modelSize) {
+  const cols      = GRID_RES
+  const rows      = GRID_RES
+  const grid      = new Uint8Array(cols * rows)  // 1 = walkable road
+  const raycaster = new THREE.Raycaster()
+  const down      = new THREE.Vector3(0, -1, 0)
+  const castY     = bounds.max.y + 20
+  const roadYLim  = modelSize.y * ROAD_Y_THRESHOLD
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const x = bounds.min.x + (bounds.max.x - bounds.min.x) * (c + 0.5) / cols
+      const z = bounds.min.z + (bounds.max.z - bounds.min.z) * (r + 0.5) / rows
+      raycaster.set(new THREE.Vector3(x, castY, z), down)
+      const hits = raycaster.intersectObject(scene, true)
+      if (hits.length > 0 && hits[0].point.y <= roadYLim) {
+        grid[r * cols + c] = 1
+      }
+    }
+  }
+
+  // Pick waypoints: walkable cells at regular spacing, avoiding isolated pixels
+  const waypoints = []
+  const step = 3
+  for (let r = step; r < rows - step; r += step) {
+    for (let c = step; c < cols - step; c += step) {
+      if (grid[r * cols + c] === 1) {
+        // Confirm neighbours also walkable (road, not noise)
+        const ok = grid[(r-1)*cols+c] + grid[(r+1)*cols+c] +
+                   grid[r*cols+c-1]   + grid[r*cols+c+1] >= 2
+        if (ok) {
+          const wx = bounds.min.x + (bounds.max.x - bounds.min.x) * (c + 0.5) / cols
+          const wz = bounds.min.z + (bounds.max.z - bounds.min.z) * (r + 0.5) / rows
+          waypoints.push({ pos: new THREE.Vector3(wx, g_eyeHeight, wz), c, r })
+        }
+      }
+    }
+  }
+
+  return { grid, cols, rows, waypoints }
+}
+
+// ─── World ↔ Grid helpers ─────────────────────────────────────────────────────
+function worldToCell(x, z, bounds, cols, rows) {
+  const c = Math.floor((x - bounds.min.x) / (bounds.max.x - bounds.min.x) * cols)
+  const r = Math.floor((z - bounds.min.z) / (bounds.max.z - bounds.min.z) * rows)
+  return {
+    c: Math.max(0, Math.min(cols - 1, c)),
+    r: Math.max(0, Math.min(rows - 1, r)),
+  }
+}
+
+function cellToWorld(c, r, bounds, cols, rows) {
+  return new THREE.Vector3(
+    bounds.min.x + (c + 0.5) / cols * (bounds.max.x - bounds.min.x),
+    g_eyeHeight,
+    bounds.min.z + (r + 0.5) / rows * (bounds.max.z - bounds.min.z),
+  )
+}
+
+// ─── A* Pathfinding on walkable grid ─────────────────────────────────────────
+function astar(sc, sr, ec, er, grid, cols, rows) {
+  const key  = (c, r) => r * cols + c
+  const h    = (c, r) => Math.abs(c - ec) + Math.abs(r - er)
+  const open = new Map()
+  const g    = new Map()
+  const prev = new Map()
+
+  const startKey = key(sc, sr)
+  g.set(startKey, 0)
+  open.set(startKey, { c: sc, r: sr, f: h(sc, sr) })
+
+  const DIRS = [
+    [1,0],[-1,0],[0,1],[0,-1],
+    [1,1],[1,-1],[-1,1],[-1,-1],
+  ]
+
+  let iterations = 0
+  while (open.size > 0 && iterations++ < 8000) {
+    // pick lowest f
+    let bestKey = null, bestF = Infinity
+    for (const [k, v] of open) { if (v.f < bestF) { bestF = v.f; bestKey = k } }
+    const cur = open.get(bestKey)
+    open.delete(bestKey)
+
+    if (cur.c === ec && cur.r === er) {
+      // Reconstruct
+      const path = []
+      let k = key(ec, er)
+      while (k !== undefined) {
+        const [c, r] = [k % cols, Math.floor(k / cols)]
+        path.unshift({ c, r })
+        k = prev.get(k)
+      }
+      return path
+    }
+
+    const gCur = g.get(bestKey) ?? Infinity
+    for (const [dc, dr] of DIRS) {
+      const nc = cur.c + dc, nr = cur.r + dr
+      if (nc < 0 || nc >= cols || nr < 0 || nr >= rows) continue
+      if (grid[nr * cols + nc] !== 1) continue
+      const cost  = gCur + (Math.abs(dc) + Math.abs(dr) === 2 ? 1.41 : 1)
+      const nk    = key(nc, nr)
+      if (cost < (g.get(nk) ?? Infinity)) {
+        g.set(nk, cost)
+        prev.set(nk, bestKey)
+        open.set(nk, { c: nc, r: nr, f: cost + h(nc, nr) })
+      }
+    }
+  }
+  return null   // no path
+}
 
 // ─── Scene ────────────────────────────────────────────────────────────────────
 function Scene({ onLoad, onSceneReady }) {
@@ -53,9 +170,10 @@ function Scene({ onLoad, onSceneReady }) {
     scene.updateMatrixWorld(true)
     scene.matrixAutoUpdate = false
 
-    const finalBox  = new THREE.Box3().setFromObject(scene)
-    g_bounds        = finalBox.clone()
-    g_sceneRef      = scene
+    const finalBox = new THREE.Box3().setFromObject(scene)
+    g_bounds   = finalBox.clone()
+    g_sceneObj = scene
+    g_modelSize.copy(size)
 
     const maxDim    = Math.max(size.x, size.y, size.z)
     const eyeHeight = Math.max(size.y * EYE_HEIGHT_FRACTION, 3)
@@ -70,7 +188,7 @@ function Scene({ onLoad, onSceneReady }) {
     camera.far  = maxDim * 50
     camera.fov  = 75
     camera.position.set(spawnX, eyeHeight, spawnZ)
-    camera.rotation.set(0, 0, 0)   // face into city
+    camera.rotation.set(0, 0, 0)
     camera.updateProjectionMatrix()
 
     onSceneReady(scene, finalBox, size)
@@ -80,62 +198,26 @@ function Scene({ onLoad, onSceneReady }) {
   return <primitive object={scene} />
 }
 
-// ─── Road waypoint detection (runs once after scene load) ────────────────────
-function detectWaypoints(scene, bounds, modelSize) {
-  const raycaster   = new THREE.Raycaster()
-  const downDir     = new THREE.Vector3(0, -1, 0)
-  const roadYLimit  = modelSize.y * ROAD_Y_THRESHOLD
-  const waypoints   = []
-
-  const xMin = bounds.min.x, xMax = bounds.max.x
-  const zMin = bounds.min.z, zMax = bounds.max.z
-  const castY = bounds.max.y + 10
-
-  for (let i = 0; i < WAYPOINT_GRID; i++) {
-    for (let j = 0; j < WAYPOINT_GRID; j++) {
-      const x = xMin + (xMax - xMin) * (i + 0.5) / WAYPOINT_GRID
-      const z = zMin + (zMax - zMin) * (j + 0.5) / WAYPOINT_GRID
-
-      raycaster.set(new THREE.Vector3(x, castY, z), downDir)
-      const hits = raycaster.intersectObject(scene, true)
-
-      if (hits.length > 0) {
-        const hit = hits[0]
-        // Only keep hits near ground level = road / path
-        if (hit.point.y <= roadYLimit) {
-          waypoints.push(new THREE.Vector3(hit.point.x, hit.point.y, hit.point.z))
-        }
-      }
-    }
-  }
-
-  return waypoints
-}
-
-// ─── Waypoint markers rendered in 3D ─────────────────────────────────────────
-function WaypointMarkers({ waypoints, hoveredIdx, flyTarget }) {
+// ─── Waypoint markers ─────────────────────────────────────────────────────────
+function WaypointMarkers({ waypoints, hoveredIdx, activePathIdx }) {
   if (!waypoints.length) return null
-
   return (
     <group>
-      {waypoints.map((wp, i) => {
-        const isHovered = i === hoveredIdx
-        const isFly     = flyTarget && flyTarget.index === i
-        const r         = isHovered ? 3.5 : 2.2
-        const color     = isFly ? '#ffff00' : isHovered ? '#ffffff' : '#ffcc44'
-        const opacity   = isHovered ? 0.95 : 0.55
-
+      {waypoints.map(({ pos }, i) => {
+        const isH = i === hoveredIdx
+        const isA = i === activePathIdx
+        const r   = isH ? 3.8 : 2.4
+        const col = isA ? '#ffff00' : isH ? '#ffffff' : '#ffcc44'
+        const op  = isH ? 0.95 : 0.5
         return (
-          <group key={i} position={[wp.x, wp.y + 0.5, wp.z]}>
-            {/* Outer ring */}
+          <group key={i} position={[pos.x, pos.y + 0.3, pos.z]}>
             <mesh rotation={[-Math.PI / 2, 0, 0]}>
-              <ringGeometry args={[r * 0.65, r, 32]} />
-              <meshBasicMaterial color={color} transparent opacity={opacity} depthTest={false} />
+              <ringGeometry args={[r * 0.6, r, 28]} />
+              <meshBasicMaterial color={col} transparent opacity={op} depthTest={false} />
             </mesh>
-            {/* Center dot */}
             <mesh rotation={[-Math.PI / 2, 0, 0]}>
-              <circleGeometry args={[r * 0.25, 16]} />
-              <meshBasicMaterial color={color} transparent opacity={opacity + 0.2} depthTest={false} />
+              <circleGeometry args={[r * 0.22, 14]} />
+              <meshBasicMaterial color={col} transparent opacity={op + 0.2} depthTest={false} />
             </mesh>
           </group>
         )
@@ -144,93 +226,100 @@ function WaypointMarkers({ waypoints, hoveredIdx, flyTarget }) {
   )
 }
 
-// ─── Waypoint hover + click detection ────────────────────────────────────────
-function WaypointInteractor({ waypoints, onHover, onClick, topViewRef }) {
-  const { camera, gl, size } = useThree()
-  const raycaster = useRef(new THREE.Raycaster())
-  const mouse     = useRef(new THREE.Vector2())
+// ─── Waypoint hover picker ────────────────────────────────────────────────────
+function WaypointPicker({ waypoints, onHover, onPick, navActive }) {
+  const { camera, gl } = useThree()
+  const mouse = useRef(new THREE.Vector2())
 
   useEffect(() => {
     if (!waypoints.length) return
     const canvas = gl.domElement
 
-    const toNDC = (clientX, clientY) => {
+    const toNDC = (cx, cy) => {
       const rect = canvas.getBoundingClientRect()
-      mouse.current.x =  ((clientX - rect.left) / rect.width)  * 2 - 1
-      mouse.current.y = -((clientY - rect.top)  / rect.height) * 2 + 1
+      mouse.current.x =  ((cx - rect.left) / rect.width)  * 2 - 1
+      mouse.current.y = -((cy - rect.top)  / rect.height) * 2 + 1
     }
 
-    const findNearest = () => {
-      raycaster.current.setFromCamera(mouse.current, camera)
-      const ray = raycaster.current.ray
-      let best = -1, bestDist = Infinity
-      const PICK_RADIUS = Math.max(g_eyeHeight * 2.5, 15)
-
-      waypoints.forEach((wp, i) => {
-        const d = ray.distanceToPoint(wp)
-        const cam2wp = wp.distanceTo(camera.position)
-        if (d < PICK_RADIUS && cam2wp < bestDist) {
-          bestDist = cam2wp
-          best = i
-        }
+    const nearest = () => {
+      const ray = new THREE.Raycaster()
+      ray.setFromCamera(mouse.current, camera)
+      const r = ray.ray
+      const RADIUS = Math.max(g_eyeHeight * 3, 20)
+      let best = -1, bestD = Infinity
+      waypoints.forEach(({ pos }, i) => {
+        const d = r.distanceToPoint(pos)
+        const camDist = pos.distanceTo(camera.position)
+        if (d < RADIUS && camDist < bestD) { bestD = camDist; best = i }
       })
       return best
     }
 
-    const onMouseMove = (e) => {
-      toNDC(e.clientX, e.clientY)
-      onHover(findNearest())
-    }
+    const onMove  = (e) => { toNDC(e.clientX, e.clientY); onHover(nearest()) }
+    const onClick = (e) => { toNDC(e.clientX, e.clientY); const i = nearest(); if (i >= 0) onPick(i) }
 
-    const onMouseClick = (e) => {
-      if (topViewRef.current) return
-      toNDC(e.clientX, e.clientY)
-      const idx = findNearest()
-      if (idx >= 0) onClick(idx)
-    }
-
-    canvas.addEventListener('mousemove', onMouseMove)
-    canvas.addEventListener('click', onMouseClick)
+    canvas.addEventListener('mousemove', onMove)
+    canvas.addEventListener('click', onClick)
     return () => {
-      canvas.removeEventListener('mousemove', onMouseMove)
-      canvas.removeEventListener('click', onMouseClick)
+      canvas.removeEventListener('mousemove', onMove)
+      canvas.removeEventListener('click', onClick)
     }
-  }, [waypoints, camera, gl, onHover, onClick, topViewRef, size])
+  }, [waypoints, camera, gl, onHover, onPick])
 
   return null
 }
 
-// ─── Fly-to animator ──────────────────────────────────────────────────────────
-function FlyToAnimator({ flyTarget, onArrived }) {
+// ─── Road Navigator: follows A* path, auto-turns at bends ────────────────────
+function RoadNavigator({ pathRef, navActiveRef, yawRef }) {
   const { camera } = useThree()
+  const nodeIdx    = useRef(0)
+  const prevPath   = useRef(null)
 
   useFrame(() => {
-    if (!flyTarget) return
-    const dest = flyTarget.position
-    const dx = dest.x - camera.position.x
-    const dz = dest.z - camera.position.z
-    camera.position.x += dx * FLY_SPEED
-    camera.position.z += dz * FLY_SPEED
-    camera.position.y = g_eyeHeight
+    const path = pathRef.current
+    if (!navActiveRef.current || !path || path.length === 0) return
 
-    // Auto-look toward destination while flying
-    const dist = Math.sqrt(dx * dx + dz * dz)
-    if (dist > 1) {
-      const targetYaw = Math.atan2(dx, dz) + Math.PI
-      // signal yaw change via callback
-      onArrived(null, targetYaw)   // update yaw live
+    // Reset node index when path changes
+    if (path !== prevPath.current) {
+      nodeIdx.current = 0
+      prevPath.current = path
     }
 
-    if (Math.abs(dx) < 1 && Math.abs(dz) < 1) {
-      onArrived(null, null)   // arrived — clear target but keep yaw
+    let idx = nodeIdx.current
+    if (idx >= path.length) { navActiveRef.current = false; return }
+
+    const target = path[idx]
+    const dx = target.x - camera.position.x
+    const dz = target.z - camera.position.z
+    const dist = Math.sqrt(dx * dx + dz * dz)
+
+    if (dist < 2.5) {
+      // Reached this node — advance
+      nodeIdx.current = idx + 1
+      if (nodeIdx.current >= path.length) { navActiveRef.current = false; return }
+    }
+
+    // Move toward current node
+    camera.position.x += dx * PATH_SPEED
+    camera.position.z += dz * PATH_SPEED
+    camera.position.y  = g_eyeHeight
+
+    // Auto-turn: smoothly rotate yaw toward movement direction
+    if (dist > 0.5) {
+      const targetYaw = Math.atan2(-dx, -dz)
+      let delta = targetYaw - yawRef.current
+      // Normalize to [-π, π]
+      while (delta > Math.PI)  delta -= 2 * Math.PI
+      while (delta < -Math.PI) delta += 2 * Math.PI
+      yawRef.current += delta * YAW_LERP
     }
   })
 
   return null
 }
 
-// ─── Street-view controls ─────────────────────────────────────────────────────
-function FreeControls({ topViewRef, yawRef, pitchRef, flyActiveRef }) {
+// ─── Manual free controls (WASD + drag-look + scroll) ────────────────────────
+function FreeControls({ topViewRef, navActiveRef, yawRef, pitchRef }) {
   const { camera, gl } = useThree()
   const keysRef   = useRef({})
   const dragRef   = useRef(false)
@@ -241,15 +330,18 @@ function FreeControls({ topViewRef, yawRef, pitchRef, flyActiveRef }) {
 
     const onKeyDown = (e) => {
       keysRef.current[e.code] = true
+      navActiveRef.current = false   // manual key cancels nav
       if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code))
         e.preventDefault()
     }
-    const onKeyUp   = (e) => { keysRef.current[e.code] = false }
+    const onKeyUp = (e) => { keysRef.current[e.code] = false }
 
     const onWheel = (e) => { e.preventDefault(); zoomDelta.current += e.deltaY }
 
-    const onMouseDown = (e) => { if (e.button === 0) { dragRef.current = true; flyActiveRef.current = false } }
-    const onMouseUp   = ()  => { dragRef.current = false }
+    const onMouseDown = (e) => {
+      if (e.button === 0) { dragRef.current = true; navActiveRef.current = false }
+    }
+    const onMouseUp   = () => { dragRef.current = false }
     const onMouseMove = (e) => {
       if (!dragRef.current || topViewRef.current) return
       yawRef.current   -= e.movementX * MOUSE_SENSITIVITY
@@ -258,8 +350,8 @@ function FreeControls({ topViewRef, yawRef, pitchRef, flyActiveRef }) {
     }
 
     let lx = 0, ly = 0
-    const onTouchStart = (e) => { dragRef.current = true; flyActiveRef.current = false; lx = e.touches[0].clientX; ly = e.touches[0].clientY }
-    const onTouchEnd   = ()  => { dragRef.current = false }
+    const onTouchStart = (e) => { dragRef.current = true; navActiveRef.current = false; lx = e.touches[0].clientX; ly = e.touches[0].clientY }
+    const onTouchEnd   = () => { dragRef.current = false }
     const onTouchMove  = (e) => {
       if (!dragRef.current || topViewRef.current) return
       const dx = e.touches[0].clientX - lx; const dy = e.touches[0].clientY - ly
@@ -290,7 +382,7 @@ function FreeControls({ topViewRef, yawRef, pitchRef, flyActiveRef }) {
       window.removeEventListener('touchend',  onTouchEnd)
       window.removeEventListener('touchmove', onTouchMove)
     }
-  }, [gl, topViewRef, yawRef, pitchRef, flyActiveRef])
+  }, [gl, topViewRef, navActiveRef, yawRef, pitchRef])
 
   const moveDir = useRef(new THREE.Vector3())
   const euler   = useRef(new THREE.Euler(0, 0, 0, 'YXZ'))
@@ -299,15 +391,20 @@ function FreeControls({ topViewRef, yawRef, pitchRef, flyActiveRef }) {
   useFrame((_, delta) => {
     if (topViewRef.current) return
 
+    // Apply look from yawRef / pitchRef (also updated by RoadNavigator)
     euler.current.set(pitchRef.current, yawRef.current, 0, 'YXZ')
     camera.quaternion.setFromEuler(euler.current)
 
+    if (navActiveRef.current) return   // Navigator handles position
+
+    // Scroll zoom
     if (zoomDelta.current !== 0) {
       fwd.current.set(0, 0, -1).applyEuler(new THREE.Euler(0, yawRef.current, 0))
-      camera.position.addScaledVector(fwd.current, -zoomDelta.current * SCROLL_ZOOM_SPEED)
+      camera.position.addScaledVector(fwd.current, -zoomDelta.current * 0.4)
       zoomDelta.current = 0
     }
 
+    // WASD (road-constrained: only move if next cell is walkable)
     const k   = keysRef.current
     const dir = moveDir.current.set(0, 0, 0)
     if (k['KeyW'] || k['ArrowUp'])    dir.z -= 1
@@ -316,10 +413,21 @@ function FreeControls({ topViewRef, yawRef, pitchRef, flyActiveRef }) {
     if (k['KeyD'] || k['ArrowRight']) dir.x += 1
 
     if (dir.lengthSq() > 0) {
-      flyActiveRef.current = false
       dir.normalize()
       dir.applyEuler(new THREE.Euler(0, yawRef.current, 0))
-      camera.position.addScaledVector(dir, g_walkSpeed * delta)
+      const step  = g_walkSpeed * delta
+      const nx    = camera.position.x + dir.x * step
+      const nz    = camera.position.z + dir.z * step
+      // Only allow movement if next position is on road
+      if (g_bounds && g_sceneObj) {
+        const { c, r } = worldToCell(nx, nz, g_bounds, GRID_RES, GRID_RES)
+        // Use the navData walkable grid stored in window for check
+        const walkable = window.__navGrid && window.__navGrid[r * GRID_RES + c] === 1
+        if (walkable) {
+          camera.position.x = nx
+          camera.position.z = nz
+        }
+      }
     }
 
     camera.position.y = g_eyeHeight
@@ -337,7 +445,7 @@ function FreeControls({ topViewRef, yawRef, pitchRef, flyActiveRef }) {
 // ─── Top-view camera ──────────────────────────────────────────────────────────
 function TopViewCamera({ topViewRef }) {
   const { camera } = useThree()
-  const tgt = useRef(new THREE.Vector3())
+  const tgt  = useRef(new THREE.Vector3())
   const tgtQ = useRef(new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0, 'YXZ')))
 
   useFrame(() => {
@@ -353,7 +461,7 @@ function TopViewCamera({ topViewRef }) {
   return null
 }
 
-// ─── Position saver + restorer ────────────────────────────────────────────────
+// ─── Saved position restorer when leaving top-view ───────────────────────────
 function PositionSaver({ topViewRef, savedPosRef, yawRef, pitchRef }) {
   const { camera } = useThree()
   const wasTop = useRef(false)
@@ -390,6 +498,7 @@ class ErrorBoundary extends Component {
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
 function Loader({ phase }) {
+  const msg = { loading:'Loading Egyptian City…', scanning:'Scanning roads…', pathfinding:'Building road map…' }
   return (
     <div style={{ position:'absolute', inset:0, display:'flex', flexDirection:'column',
       alignItems:'center', justifyContent:'center',
@@ -397,24 +506,22 @@ function Loader({ phase }) {
       gap:16, pointerEvents:'none', zIndex:10 }}>
       <div style={{ width:48, height:48, border:'4px solid #4a2800',
         borderTop:'4px solid #ffcc88', borderRadius:'50%', animation:'spin 1s linear infinite' }}/>
-      <div style={{fontSize:16}}>
-        {phase === 'waypoints' ? 'Scanning roads…' : 'Loading Egyptian City…'}
-      </div>
+      <div style={{fontSize:16}}>{msg[phase] || 'Loading…'}</div>
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
     </div>
   )
 }
 
 // ─── Hint ─────────────────────────────────────────────────────────────────────
-function Hint({ topView }) {
+function Hint({ topView, navigating }) {
   return (
     <div style={{ position:'absolute', bottom:24, left:'50%', transform:'translateX(-50%)',
       background:'rgba(0,0,0,0.55)', color:'#ffcc88', fontFamily:'sans-serif',
       fontSize:13, padding:'8px 18px', borderRadius:8, pointerEvents:'none',
       border:'1px solid rgba(255,200,100,0.2)', whiteSpace:'nowrap' }}>
-      {topView
-        ? '🗺 Top View — click Street View to walk'
-        : '🖱 Drag to look · WASD / click waypoint 🔶 to move · Scroll to zoom'}
+      {topView      ? '🗺 Top View — click Street View to walk' :
+       navigating   ? '🔶 Navigating road… drag or press key to stop' :
+                      '🖱 Drag to look · WASD to walk · Click 🔶 waypoint to navigate'}
     </div>
   )
 }
@@ -438,44 +545,69 @@ function ViewToggle({ topView, onToggle }) {
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [phase, setPhase]       = useState('loading')   // loading | waypoints | ready
-  const [topView, setTopView]   = useState(false)
-  const [waypoints, setWaypoints] = useState([])
-  const [hoveredIdx, setHoveredIdx] = useState(-1)
-  const [flyTarget, setFlyTarget]   = useState(null)    // { index, position }
+  const [phase, setPhase]         = useState('loading')
+  const [topView, setTopView]     = useState(false)
+  const [navData, setNavData]     = useState(null)      // { grid, cols, rows, waypoints }
+  const [hoveredIdx, setHoveredIdx]   = useState(-1)
+  const [activePathIdx, setActivePathIdx] = useState(-1)
+  const [navigating, setNavigating]   = useState(false)
 
   const topViewRef   = useRef(false)
+  const navActiveRef = useRef(false)
+  const pathRef      = useRef(null)
   const yawRef       = useRef(0)
   const pitchRef     = useRef(0)
   const savedPosRef  = useRef(new THREE.Vector3())
-  const flyActiveRef = useRef(false)
 
-  const handleLoad = useCallback(() => setPhase('waypoints'), [])
+  const handleLoad = useCallback(() => setPhase('scanning'), [])
 
   const handleSceneReady = useCallback((scene, bounds, modelSize) => {
-    // Detect waypoints in a setTimeout so the render can paint "Scanning roads…" first
     setTimeout(() => {
-      const pts = detectWaypoints(scene, bounds, modelSize)
-      setWaypoints(pts)
-      setPhase('ready')
-    }, 50)
+      setPhase('pathfinding')
+      setTimeout(() => {
+        const data = buildNavData(scene, bounds, modelSize)
+        window.__navGrid = data.grid   // expose for WASD collision
+        setNavData(data)
+        setPhase('ready')
+      }, 30)
+    }, 30)
   }, [])
 
   const toggleTopView = useCallback(() => {
     setTopView(v => { topViewRef.current = !v; return !v })
   }, [])
 
-  const handleWaypointClick = useCallback((idx) => {
-    if (idx < 0 || !waypoints[idx]) return
-    flyActiveRef.current = true
-    setFlyTarget({ index: idx, position: waypoints[idx] })
-  }, [waypoints])
+  const handlePick = useCallback((idx) => {
+    if (!navData || !g_bounds) return
+    // Get camera position as grid cell
+    const { camera } = window.__threeCamera || {}
+    if (!camera) return
 
-  // FlyToAnimator callback: update yaw live while flying, clear on arrival
-  const handleFlyUpdate = useCallback((_, newYaw) => {
-    if (newYaw !== null) yawRef.current = newYaw
-    else { flyActiveRef.current = false; setFlyTarget(null) }
-  }, [])
+    const { c: sc, r: sr } = worldToCell(camera.position.x, camera.position.z, g_bounds, navData.cols, navData.rows)
+    const { c: ec, r: er } = navData.waypoints[idx]
+
+    const rawPath = astar(sc, sr, ec, er, navData.grid, navData.cols, navData.rows)
+    if (!rawPath || rawPath.length < 2) return
+
+    // Convert grid path to world positions (thin out: every 2 nodes)
+    const worldPath = rawPath
+      .filter((_, i) => i % 2 === 0 || i === rawPath.length - 1)
+      .map(({ c, r }) => cellToWorld(c, r, g_bounds, navData.cols, navData.rows))
+
+    pathRef.current    = worldPath
+    navActiveRef.current = true
+    setActivePathIdx(idx)
+    setNavigating(true)
+  }, [navData])
+
+  // Track navigation state for UI
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (!navActiveRef.current && navigating) setNavigating(false)
+      if (navActiveRef.current  && !navigating) setNavigating(true)
+    }, 200)
+    return () => clearInterval(id)
+  }, [navigating])
 
   const showLoader = phase !== 'ready'
 
@@ -484,9 +616,12 @@ export default function App() {
       <div style={{ position:'relative', width:'100vw', height:'100vh', background:'#1a0a00', overflow:'hidden' }}>
         {showLoader && <Loader phase={phase} />}
 
+        {/* Camera accessor for handlePick */}
+        <CameraExporter />
+
         <Canvas
           style={{ position:'absolute', inset:0, width:'100%', height:'100%',
-            cursor: showLoader ? 'default' : (hoveredIdx >= 0 ? 'pointer' : topView ? 'default' : 'grab') }}
+            cursor: showLoader ? 'default' : hoveredIdx >= 0 ? 'pointer' : topView ? 'default' : 'grab' }}
           gl={{ antialias:true, failIfMajorPerformanceCaveat:false, powerPreference:'high-performance' }}
           camera={{ position:[0, 10, 50], fov:75, near:0.1, far:50000 }}
         >
@@ -498,19 +633,14 @@ export default function App() {
             <Scene onLoad={handleLoad} onSceneReady={handleSceneReady} />
           </Suspense>
 
-          {phase === 'ready' && (
+          {phase === 'ready' && navData && (
             <>
-              <WaypointMarkers waypoints={waypoints} hoveredIdx={hoveredIdx} flyTarget={flyTarget} />
-              <WaypointInteractor
-                waypoints={waypoints}
-                onHover={setHoveredIdx}
-                onClick={handleWaypointClick}
-                topViewRef={topViewRef}
-              />
-              <FlyToAnimator flyTarget={flyActiveRef.current ? flyTarget : null} onArrived={handleFlyUpdate} />
-              <PositionSaver topViewRef={topViewRef} savedPosRef={savedPosRef} yawRef={yawRef} pitchRef={pitchRef} />
-              <FreeControls  topViewRef={topViewRef} yawRef={yawRef} pitchRef={pitchRef} flyActiveRef={flyActiveRef} />
-              <TopViewCamera topViewRef={topViewRef} />
+              <WaypointMarkers waypoints={navData.waypoints} hoveredIdx={hoveredIdx} activePathIdx={activePathIdx} />
+              <WaypointPicker  waypoints={navData.waypoints} onHover={setHoveredIdx} onPick={handlePick} navActive={navActiveRef} />
+              <RoadNavigator   pathRef={pathRef} navActiveRef={navActiveRef} yawRef={yawRef} />
+              <PositionSaver   topViewRef={topViewRef} savedPosRef={savedPosRef} yawRef={yawRef} pitchRef={pitchRef} />
+              <FreeControls    topViewRef={topViewRef} navActiveRef={navActiveRef} yawRef={yawRef} pitchRef={pitchRef} />
+              <TopViewCamera   topViewRef={topViewRef} />
             </>
           )}
         </Canvas>
@@ -518,10 +648,17 @@ export default function App() {
         {phase === 'ready' && (
           <>
             <ViewToggle topView={topView} onToggle={toggleTopView} />
-            <Hint topView={topView} />
+            <Hint topView={topView} navigating={navigating} />
           </>
         )}
       </div>
     </ErrorBoundary>
   )
+}
+
+// ─── Exports camera ref to window so handlePick can read position ─────────────
+function CameraExporter() {
+  const { camera } = useThree()
+  useEffect(() => { window.__threeCamera = { camera } }, [camera])
+  return null
 }
