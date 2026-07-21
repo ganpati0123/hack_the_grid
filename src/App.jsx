@@ -487,18 +487,34 @@ function FreeControls({ topViewRef, navActiveRef, yawRef, pitchRef }) {
 
 // ─── Top-view camera ──────────────────────────────────────────────────────────
 function TopViewCamera({ topViewRef }) {
-  const { camera } = useThree()
+  const { camera, size } = useThree()
   const tgt  = useRef(new THREE.Vector3())
   const tgtQ = useRef(new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0, 'YXZ')))
+  const arrived = useRef(false)
 
   useFrame(() => {
-    if (!topViewRef.current || !g_bounds) return
-    const cx   = (g_bounds.min.x + g_bounds.max.x) / 2
-    const cz   = (g_bounds.min.z + g_bounds.max.z) / 2
-    const span = Math.max(g_bounds.max.x - g_bounds.min.x, g_bounds.max.z - g_bounds.min.z)
-    tgt.current.set(cx, g_bounds.max.y + span * 0.8, cz)
-    camera.position.lerp(tgt.current, 0.08)
-    camera.quaternion.slerp(tgtQ.current, 0.08)
+    if (!topViewRef.current || !g_bounds) { arrived.current = false; return }
+
+    const cx     = (g_bounds.min.x + g_bounds.max.x) / 2
+    const cz     = (g_bounds.min.z + g_bounds.max.z) / 2
+    const spanX  = g_bounds.max.x - g_bounds.min.x
+    const spanZ  = g_bounds.max.z - g_bounds.min.z
+
+    // Height needed to fit full city in view, accounting for FOV + aspect ratio
+    const aspect   = size.width / size.height
+    const fovRad   = camera.fov * (Math.PI / 180)
+    const fitH     = (spanZ / 2) / Math.tan(fovRad / 2)
+    const fitW     = (spanX / 2) / (Math.tan(fovRad / 2) * aspect)
+    const fitHeight = Math.max(fitH, fitW) * 1.15 + g_bounds.max.y   // 15% padding
+
+    tgt.current.set(cx, fitHeight, cz)
+
+    const speed = arrived.current ? 0.06 : 0.10
+    camera.position.lerp(tgt.current, speed)
+    camera.quaternion.slerp(tgtQ.current, 0.10)
+
+    // Mark arrived when close enough
+    if (camera.position.distanceTo(tgt.current) < 1) arrived.current = true
   })
 
   return null
