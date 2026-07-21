@@ -1,0 +1,35 @@
+GET
+https://hack-the-grid-dun.vercel.app/favicon.ico
+[HTTP/2 404  0ms]
+
+Error: Could not load /egyptian_city.glb: JSON.parse: unexpected character at line 1 column 1 of the JSON data
+    mb https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3914
+    a https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3914
+    load https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3914
+    load https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3880
+    promise callback*load https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3880
+    load https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3914
+    mb https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3914
+    mb https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3914
+    mb https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3914
+    eb https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3888
+    JO https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3888
+    preload https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3914
+    preload https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3915
+    <anonymous> https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3915
+index-BceyV-7_.js:3914:33069
+Error: Could not load /egyptian_city.glb: JSON.parse: unexpected character at line 1 column 1 of the JSON data
+    mb https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3914
+    a https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3914
+    load https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3914
+    load https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3880
+    promise callback*load https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3880
+    load https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3914
+    mb https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3914
+    mb https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3914
+    mb https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3914
+    eb https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3888
+    JO https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3888
+    preload https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3914
+    preload https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3915
+    <anonymous> https://hack-the-grid-dun.vercel.app/assets/index-BceyV-7_.js:3915
