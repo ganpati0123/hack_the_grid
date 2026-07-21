@@ -67,7 +67,9 @@ function Scene({ onLoad }) {
     camera.far  = maxDim * 50
     camera.fov  = 75
     camera.position.set(spawnX, eyeHeight, spawnZ)
-    camera.rotation.set(0, 0, 0)
+    // Apply initial yaw so camera faces left from the start
+    const initEuler = new THREE.Euler(0, INITIAL_YAW, 0, 'YXZ')
+    camera.quaternion.setFromEuler(initEuler)
     camera.updateProjectionMatrix()
 
     onLoad()
