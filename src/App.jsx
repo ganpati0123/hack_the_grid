@@ -5,87 +5,69 @@ import * as THREE from 'three'
 
 useGLTF.preload('/egyptian_city.glb')
 
-// ─── Tunable constants ──────────────────────────────────────────────────────
-// Rotate model so the previously back-facing entrance (upper-right in the
-// isometric screenshot) becomes the front-facing +Z side.
-// Math.PI = 180° flip from original model orientation.
-const MODEL_ROTATION_Y = Math.PI
+// ─── Tunable constants ───────────────────────────────────────────────────────
+const MODEL_ROTATION_Y   = Math.PI   // 180° flip — entrance faces +Z
+const GATE_X_FRACTION    = 0.12      // slight east offset of gate (fraction of half-width)
+const SPAWN_BUFFER       = -20       // negative = spawn INSIDE campus, right at the gate
+const EYE_HEIGHT_FRACTION = 0.20     // fraction of building height (~1.7 m scale)
+const WALK_SPEED_FRACTION = 0.35     // units/sec relative to model size
+const MOUSE_SENSITIVITY  = 0.004     // drag-to-look sensitivity (no pointer lock)
+// ─────────────────────────────────────────────────────────────────────────────
 
-// The gate sits slightly east (+X) of center on the north edge.
-// Fraction of model half-width (positive = east). 0 = dead centre.
-const GATE_X_FRACTION = 0.12
-
-// Spawn the player this many units *outside* the north boundary.
-const SPAWN_BUFFER = 8
-
-// Eye height as a fraction of building height (size.y).
-// 0.20 ≈ 1.7 m for typical 8-10 m buildings at this scale.
-const EYE_HEIGHT_FRACTION = 0.20
-
-// Ground walking speed (units / second). Scaled to model size.
-const WALK_SPEED_FRACTION = 0.35
-
-// Mouse-look sensitivity
-const MOUSE_SENSITIVITY = 0.002
-// ────────────────────────────────────────────────────────────────────────────
-
-// Passed from Scene up to App so FirstPersonControls gets consistent values.
 let g_eyeHeight = 10
 let g_walkSpeed = 80
-let g_spawnX = 0
-let g_spawnZ = 0
+let g_spawnX    = 0
+let g_spawnZ    = 0
 
 function Scene({ onLoad }) {
-  const { scene } = useGLTF('/egyptian_city.glb')
-  const { camera } = useThree()
-  const initialized = useRef(false)
+  const { scene }     = useGLTF('/egyptian_city.glb')
+  const { camera }    = useThree()
+  const initialized   = useRef(false)
 
   useEffect(() => {
     if (initialized.current) return
     initialized.current = true
 
-    // 1. Raw bounding box (pre-scale)
-    const rawBox = new THREE.Box3().setFromObject(scene)
+    // Raw bounds before scaling
+    const rawBox  = new THREE.Box3().setFromObject(scene)
     const rawSize = new THREE.Vector3()
     rawBox.getSize(rawSize)
-    const rawMax = Math.max(rawSize.x, rawSize.y, rawSize.z)
+    const rawMax  = Math.max(rawSize.x, rawSize.y, rawSize.z)
 
-    // 2. Uniform scale so the longest axis = 500 units
-    const TARGET = 500
+    // Scale max dimension → 500 units
+    const TARGET    = 500
     const autoScale = rawMax > 0 ? TARGET / rawMax : 1
     scene.scale.set(autoScale, autoScale, autoScale)
-
-    // Rotate the whole world so the entrance faces +Z (toward the player spawn)
     scene.rotation.y = MODEL_ROTATION_Y
     scene.updateMatrixWorld(true)
 
-    // 3. Center on XZ, ground on Y
-    const box = new THREE.Box3().setFromObject(scene)
+    // Center on XZ, ground on Y
+    const box    = new THREE.Box3().setFromObject(scene)
     const center = box.getCenter(new THREE.Vector3())
-    const size = new THREE.Vector3()
+    const size   = new THREE.Vector3()
     box.getSize(size)
 
     scene.position.set(-center.x, -box.min.y, -center.z)
     scene.updateMatrixWorld(true)
     scene.matrixAutoUpdate = false
 
-    // 4. Compute spawn & camera settings
-    const maxDim = Math.max(size.x, size.y, size.z)
+    // Compute spawn point — right at the gate, slightly inside
+    const maxDim   = Math.max(size.x, size.y, size.z)
     const eyeHeight = Math.max(size.y * EYE_HEIGHT_FRACTION, 3)
     const walkSpeed = maxDim * WALK_SPEED_FRACTION
-    const spawnX = size.x * GATE_X_FRACTION * 0.5  // fraction of half-width
-    const spawnZ = size.z * 0.5 + SPAWN_BUFFER      // just outside north (+Z) boundary
+    const spawnX    = size.x * GATE_X_FRACTION * 0.5
+    const spawnZ    = size.z * 0.5 + SPAWN_BUFFER   // SPAWN_BUFFER is negative → inside campus
 
     g_eyeHeight = eyeHeight
     g_walkSpeed = walkSpeed
-    g_spawnX = spawnX
-    g_spawnZ = spawnZ
+    g_spawnX    = spawnX
+    g_spawnZ    = spawnZ
 
     camera.near = maxDim * 0.001
-    camera.far = maxDim * 50
-    camera.fov = 75
+    camera.far  = maxDim * 50
+    camera.fov  = 75
     camera.position.set(spawnX, eyeHeight, spawnZ)
-    camera.rotation.set(0, 0, 0) // yaw=0 → looking toward -Z (into campus)
+    camera.rotation.set(0, 0, 0)   // facing -Z into campus
     camera.updateProjectionMatrix()
 
     onLoad()
@@ -94,17 +76,18 @@ function Scene({ onLoad }) {
   return <primitive object={scene} />
 }
 
-// ─── First-person WASD + pointer-lock mouse-look ────────────────────────────
-function FirstPersonControls() {
+// ─── Controls: WASD + click-drag look, NO pointer lock, Y locked to floor ───
+function FreeControls() {
   const { camera, gl } = useThree()
   const keysRef    = useRef({})
-  const yawRef     = useRef(0)       // 0 = looking toward -Z (into campus)
+  const yawRef     = useRef(0)      // 0 = looking -Z (into campus)
   const pitchRef   = useRef(0)
-  const lockedRef  = useRef(false)
+  const dragRef    = useRef(false)
 
   useEffect(() => {
     const canvas = gl.domElement
 
+    // ── Keyboard ──
     const onKeyDown = (e) => {
       keysRef.current[e.code] = true
       if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code))
@@ -112,31 +95,55 @@ function FirstPersonControls() {
     }
     const onKeyUp = (e) => { keysRef.current[e.code] = false }
 
+    // ── Click-drag mouse look (NO pointer lock) ──
+    const onMouseDown = (e) => {
+      if (e.button === 0) dragRef.current = true
+    }
+    const onMouseUp   = ()  => { dragRef.current = false }
     const onMouseMove = (e) => {
-      if (!lockedRef.current) return
+      if (!dragRef.current) return
       yawRef.current   -= e.movementX * MOUSE_SENSITIVITY
       pitchRef.current -= e.movementY * MOUSE_SENSITIVITY
       pitchRef.current  = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, pitchRef.current))
     }
 
-    const onClick = () => canvas.requestPointerLock()
-
-    const onLockChange = () => {
-      lockedRef.current = document.pointerLockElement === canvas
+    // Touch support
+    let lastTouchX = 0, lastTouchY = 0
+    const onTouchStart = (e) => {
+      dragRef.current = true
+      lastTouchX = e.touches[0].clientX
+      lastTouchY = e.touches[0].clientY
+    }
+    const onTouchEnd = () => { dragRef.current = false }
+    const onTouchMove = (e) => {
+      if (!dragRef.current) return
+      const dx = e.touches[0].clientX - lastTouchX
+      const dy = e.touches[0].clientY - lastTouchY
+      lastTouchX = e.touches[0].clientX
+      lastTouchY = e.touches[0].clientY
+      yawRef.current   -= dx * MOUSE_SENSITIVITY
+      pitchRef.current -= dy * MOUSE_SENSITIVITY
+      pitchRef.current  = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, pitchRef.current))
     }
 
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup',   onKeyUp)
-    document.addEventListener('mousemove', onMouseMove)
-    document.addEventListener('pointerlockchange', onLockChange)
-    canvas.addEventListener('click', onClick)
+    canvas.addEventListener('mousedown',  onMouseDown)
+    window.addEventListener('mouseup',    onMouseUp)
+    window.addEventListener('mousemove',  onMouseMove)
+    canvas.addEventListener('touchstart', onTouchStart, { passive: true })
+    window.addEventListener('touchend',   onTouchEnd)
+    window.addEventListener('touchmove',  onTouchMove,  { passive: true })
 
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup',   onKeyUp)
-      document.removeEventListener('mousemove', onMouseMove)
-      document.removeEventListener('pointerlockchange', onLockChange)
-      canvas.removeEventListener('click', onClick)
+      canvas.removeEventListener('mousedown',  onMouseDown)
+      window.removeEventListener('mouseup',    onMouseUp)
+      window.removeEventListener('mousemove',  onMouseMove)
+      canvas.removeEventListener('touchstart', onTouchStart)
+      window.removeEventListener('touchend',   onTouchEnd)
+      window.removeEventListener('touchmove',  onTouchMove)
     }
   }, [gl])
 
@@ -144,12 +151,12 @@ function FirstPersonControls() {
   const euler   = useRef(new THREE.Euler(0, 0, 0, 'YXZ'))
 
   useFrame((_, delta) => {
-    // Apply look rotation from yaw + pitch
+    // Apply look
     euler.current.set(pitchRef.current, yawRef.current, 0, 'YXZ')
     camera.quaternion.setFromEuler(euler.current)
 
-    // WASD movement
-    const k = keysRef.current
+    // WASD movement (horizontal only)
+    const k   = keysRef.current
     const dir = moveDir.current.set(0, 0, 0)
     if (k['KeyW'] || k['ArrowUp'])    dir.z -= 1
     if (k['KeyS'] || k['ArrowDown'])  dir.z += 1
@@ -158,19 +165,18 @@ function FirstPersonControls() {
 
     if (dir.lengthSq() > 0) {
       dir.normalize()
-      // Apply only horizontal yaw so player doesn't fly up ramps
       dir.applyEuler(new THREE.Euler(0, yawRef.current, 0))
       camera.position.addScaledVector(dir, g_walkSpeed * delta)
     }
 
-    // Lock Y to eye height — no flying
-    camera.position.y = g_eyeHeight
+    // ── Bottom lock only: never go below eye height (floor) ──
+    if (camera.position.y < g_eyeHeight) camera.position.y = g_eyeHeight
   })
 
   return null
 }
 
-// ─── Error boundary ─────────────────────────────────────────────────────────
+// ─── Error boundary ──────────────────────────────────────────────────────────
 class ErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { error: null } }
   static getDerivedStateFromError(e) { return { error: e } }
@@ -192,7 +198,7 @@ class ErrorBoundary extends Component {
   }
 }
 
-// ─── Loading spinner ─────────────────────────────────────────────────────────
+// ─── Loader ──────────────────────────────────────────────────────────────────
 function Loader() {
   return (
     <div style={{
@@ -212,34 +218,25 @@ function Loader() {
   )
 }
 
-// ─── Click-to-explore hint ───────────────────────────────────────────────────
+// ─── Controls hint ───────────────────────────────────────────────────────────
 function Hint({ visible }) {
   if (!visible) return null
   return (
     <div style={{
-      position:'absolute', bottom:32, left:'50%', transform:'translateX(-50%)',
+      position:'absolute', bottom:24, left:'50%', transform:'translateX(-50%)',
       background:'rgba(0,0,0,0.55)', color:'#ffcc88', fontFamily:'sans-serif',
-      fontSize:14, padding:'10px 20px', borderRadius:8, pointerEvents:'none',
-      border:'1px solid rgba(255,200,100,0.25)', letterSpacing:'0.03em',
+      fontSize:13, padding:'8px 18px', borderRadius:8, pointerEvents:'none',
+      border:'1px solid rgba(255,200,100,0.2)', whiteSpace:'nowrap',
     }}>
-      🖱 Click to explore &nbsp;·&nbsp; WASD to walk &nbsp;·&nbsp; Esc to release mouse
+      🖱 Drag to look &nbsp;·&nbsp; WASD to walk
     </div>
   )
 }
 
-// ─── Root ────────────────────────────────────────────────────────────────────
+// ─── Root ─────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [loaded,  setLoaded]  = useState(false)
-  const [locked,  setLocked]  = useState(false)
-
+  const [loaded, setLoaded] = useState(false)
   const handleLoad = useCallback(() => setLoaded(true), [])
-
-  // Track pointer-lock state for hint visibility
-  useEffect(() => {
-    const onChange = () => setLocked(!!document.pointerLockElement)
-    document.addEventListener('pointerlockchange', onChange)
-    return () => document.removeEventListener('pointerlockchange', onChange)
-  }, [])
 
   return (
     <ErrorBoundary>
@@ -247,7 +244,7 @@ export default function App() {
         {!loaded && <Loader />}
 
         <Canvas
-          style={{ width:'100%', height:'100%' }}
+          style={{ width:'100%', height:'100%', cursor: loaded ? 'grab' : 'default' }}
           gl={{ antialias:true, failIfMajorPerformanceCaveat:false, powerPreference:'high-performance' }}
           camera={{ position:[0, 10, 50], fov:75, near:0.1, far:50000 }}
         >
@@ -259,10 +256,10 @@ export default function App() {
             <Scene onLoad={handleLoad} />
           </Suspense>
 
-          {loaded && <FirstPersonControls />}
+          {loaded && <FreeControls />}
         </Canvas>
 
-        <Hint visible={loaded && !locked} />
+        <Hint visible={loaded} />
       </div>
     </ErrorBoundary>
   )
