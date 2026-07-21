@@ -659,9 +659,6 @@ export default function App() {
       <div style={{ position:'relative', width:'100vw', height:'100vh', background:'#1a0a00', overflow:'hidden' }}>
         {showLoader && <Loader phase={phase} />}
 
-        {/* Camera accessor for handlePick */}
-        <CameraExporter />
-
         <Canvas
           style={{ position:'absolute', inset:0, width:'100%', height:'100%',
             cursor: showLoader ? 'default' : hoveredIdx >= 0 ? 'pointer' : topView ? 'default' : 'grab' }}
@@ -675,6 +672,8 @@ export default function App() {
           <Suspense fallback={null}>
             <Scene onLoad={handleLoad} onSceneReady={handleSceneReady} />
           </Suspense>
+
+          <CameraExporter />
 
           {phase === 'ready' && navData && (
             <>
