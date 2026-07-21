@@ -1,64 +1,32 @@
-import { Canvas, useThree } from '@react-three/fiber'
-import { OrbitControls, useGLTF, useProgress, Html } from '@react-three/drei'
-import { Suspense, useEffect, useRef } from 'react'
+import { Suspense, useEffect } from 'react'
+import { Canvas } from '@react-three/fiber'
+import { OrbitControls, useGLTF } from '@react-three/drei'
 import * as THREE from 'three'
 
-function Loader() {
-  const { progress } = useProgress()
-  return (
-    <Html center>
-      <div style={{
-        color: '#fff',
-        fontSize: '16px',
-        fontFamily: 'sans-serif',
-        background: 'rgba(0,0,0,0.75)',
-        padding: '14px 32px',
-        borderRadius: '8px',
-        whiteSpace: 'nowrap',
-      }}>
-        Loading {Math.round(progress)}%
-      </div>
-    </Html>
-  )
-}
+// Page load hote hi GLB fetch shuru
+useGLTF.preload('/egyptian_city.glb')
 
-function City() {
+function Scene() {
   const { scene } = useGLTF('/egyptian_city.glb')
-  const { camera, controls } = useThree()
-  const groupRef = useRef()
 
   useEffect(() => {
-    if (!groupRef.current) return
-    const box = new THREE.Box3().setFromObject(groupRef.current)
-    const size = new THREE.Vector3()
-    const center = new THREE.Vector3()
-    box.getSize(size)
-    box.getCenter(center)
-    const maxDim = Math.max(size.x, size.y, size.z)
+    // Scale — model ko bada karo
+    scene.scale.set(5000, 5000, 5000)
+    // Rotation — sahi direction
+    scene.rotation.y = Math.PI / 2
+    scene.updateMatrixWorld(true)
 
-    groupRef.current.position.set(-center.x, -box.min.y, -center.z)
+    // Bounding box se center nikalo
+    const box0 = new THREE.Box3().setFromObject(scene)
+    const center = box0.getCenter(new THREE.Vector3())
 
-    const fov = camera.fov * (Math.PI / 180)
-    const camDist = (maxDim / 2) / Math.tan(fov / 2) * 1.6
-    camera.position.set(camDist * 0.7, camDist * 0.5, camDist * 0.7)
-    camera.near = maxDim * 0.001
-    camera.far = maxDim * 100
-    camera.lookAt(0, size.y * 0.3, 0)
-    camera.updateProjectionMatrix()
+    // Center ko origin pe laao, Y ko ground pe rakho
+    scene.position.set(-center.x, -box0.min.y, -center.z)
+    scene.updateMatrixWorld(true)
+    scene.matrixAutoUpdate = false  // performance ke liye freeze
+  }, [scene])
 
-    if (controls) {
-      controls.target.set(0, size.y * 0.3, 0)
-      controls.minDistance = maxDim * 0.05
-      controls.maxDistance = maxDim * 10
-      controls.update()
-    }
-  }, [scene, camera, controls])
-
-  return (
-    <group ref={groupRef}>
-      <primitive object={scene} />
-    </group>
-  )
+  return <primitive object={scene} />
 }
 
 export default function App() {
@@ -70,10 +38,17 @@ export default function App() {
     >
       <ambientLight intensity={1.5} />
       <directionalLight position={[1, 2, 1]} intensity={2} />
-      <Suspense fallback={<Loader />}>
-        <City />
+
+      <Suspense fallback={null}>
+        <Scene />
       </Suspense>
-      <OrbitControls makeDefault enableDamping dampingFactor={0.05} maxPolarAngle={Math.PI * 0.88} />
+
+      <OrbitControls
+        makeDefault
+        enableDamping
+        dampingFactor={0.05}
+        maxPolarAngle={Math.PI * 0.88}
+      />
     </Canvas>
   )
 }
