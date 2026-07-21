@@ -12,8 +12,9 @@ const SPAWN_BUFFER        = -20
 const EYE_HEIGHT_FRACTION = 0.20
 const WALK_SPEED_FRACTION = 0.35
 const MOUSE_SENSITIVITY   = 0.004
-const ROAD_Y_THRESHOLD    = 0.14   // fraction of model height → ground = road
-const GRID_RES            = 72     // NxN walkable grid resolution
+const ROAD_Y_THRESHOLD    = 0.18   // fraction of model height → ground = road
+const SKY_CLEARANCE_FRAC  = 0.35   // if roof is within this fraction of modelY → enclosed (building)
+const GRID_RES            = 96     // NxN walkable grid resolution
 const PATH_SPEED          = 0.055  // lerp speed while following path
 const YAW_LERP            = 0.07   // how fast camera turns on road bends
 // ─────────────────────────────────────────────────────────────────────────────
@@ -26,46 +27,72 @@ let g_sceneObj   = null
 
 // ─── Walkable Grid ────────────────────────────────────────────────────────────
 // Returns { grid:Uint8Array, cols, rows, waypoints:Vector3[] }
+//
+// Road detection uses TWO raycasts per cell:
+//   1. DOWN  — find the ground surface; reject if it's above roadYLim (not ground-level)
+//   2. UP    — from just above ground; if anything is overhead within skyClearance
+//              the cell is enclosed (building interior/courtyard with roof) → not a road
+//
 function buildNavData(scene, bounds, modelSize) {
-  const cols      = GRID_RES
-  const rows      = GRID_RES
-  const grid      = new Uint8Array(cols * rows)  // 1 = walkable road
-  const raycaster = new THREE.Raycaster()
-  const down      = new THREE.Vector3(0, -1, 0)
-  const castY     = bounds.max.y + 20
-  const roadYLim  = modelSize.y * ROAD_Y_THRESHOLD
+  const cols         = GRID_RES
+  const rows         = GRID_RES
+  const grid         = new Uint8Array(cols * rows)  // 1 = walkable road
+  const raycaster    = new THREE.Raycaster()
+  const DOWN         = new THREE.Vector3(0, -1, 0)
+  const UP           = new THREE.Vector3(0,  1, 0)
+  const castY        = bounds.max.y + 20
+  const roadYLim     = modelSize.y * ROAD_Y_THRESHOLD   // max Y to count as ground
+  const skyClearance = modelSize.y * SKY_CLEARANCE_FRAC  // min open height to be a road
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const x = bounds.min.x + (bounds.max.x - bounds.min.x) * (c + 0.5) / cols
       const z = bounds.min.z + (bounds.max.z - bounds.min.z) * (r + 0.5) / rows
-      raycaster.set(new THREE.Vector3(x, castY, z), down)
-      const hits = raycaster.intersectObject(scene, true)
-      if (hits.length > 0 && hits[0].point.y <= roadYLim) {
-        grid[r * cols + c] = 1
-      }
+
+      // 1 ─ Ground check (cast DOWN)
+      raycaster.set(new THREE.Vector3(x, castY, z), DOWN)
+      const downHits = raycaster.intersectObject(scene, true)
+      if (downHits.length === 0) continue
+      const groundY = downHits[0].point.y
+      if (groundY > roadYLim) continue   // surface is elevated → not street-level
+
+      // 2 ─ Sky-clearance check (cast UP from just above ground)
+      //     If a roof / ceiling / building geometry is found within skyClearance
+      //     this cell is INSIDE a building → reject it as a road
+      raycaster.set(new THREE.Vector3(x, groundY + 1.0, z), UP)
+      const upHits = raycaster.intersectObject(scene, true)
+      if (upHits.length > 0 && upHits[0].distance < skyClearance) continue
+
+      grid[r * cols + c] = 1
     }
   }
 
-  // Pick waypoints: walkable cells at regular spacing, avoiding isolated pixels
+  // ── Noise removal: require ≥ 2 walkable cardinal neighbours ─────────────────
+  const cleaned = new Uint8Array(cols * rows)
+  for (let r = 1; r < rows - 1; r++) {
+    for (let c = 1; c < cols - 1; c++) {
+      if (grid[r * cols + c] !== 1) continue
+      const neighbours =
+        grid[(r-1)*cols+c] + grid[(r+1)*cols+c] +
+        grid[r*cols+c-1]   + grid[r*cols+c+1]
+      if (neighbours >= 2) cleaned[r * cols + c] = 1
+    }
+  }
+
+  // ── Waypoints: one per step×step block of cleaned road cells ─────────────────
   const waypoints = []
-  const step = 3
+  const step = 4
   for (let r = step; r < rows - step; r += step) {
     for (let c = step; c < cols - step; c += step) {
-      if (grid[r * cols + c] === 1) {
-        // Confirm neighbours also walkable (road, not noise)
-        const ok = grid[(r-1)*cols+c] + grid[(r+1)*cols+c] +
-                   grid[r*cols+c-1]   + grid[r*cols+c+1] >= 2
-        if (ok) {
-          const wx = bounds.min.x + (bounds.max.x - bounds.min.x) * (c + 0.5) / cols
-          const wz = bounds.min.z + (bounds.max.z - bounds.min.z) * (r + 0.5) / rows
-          waypoints.push({ pos: new THREE.Vector3(wx, g_eyeHeight, wz), c, r })
-        }
+      if (cleaned[r * cols + c] === 1) {
+        const wx = bounds.min.x + (bounds.max.x - bounds.min.x) * (c + 0.5) / cols
+        const wz = bounds.min.z + (bounds.max.z - bounds.min.z) * (r + 0.5) / rows
+        waypoints.push({ pos: new THREE.Vector3(wx, g_eyeHeight, wz), c, r })
       }
     }
   }
 
-  return { grid, cols, rows, waypoints }
+  return { grid: cleaned, cols, rows, waypoints }
 }
 
 // ─── World ↔ Grid helpers ─────────────────────────────────────────────────────
