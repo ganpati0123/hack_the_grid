@@ -1,6 +1,6 @@
 {
   "framework": "vite",
-  "buildCommand": "git lfs pull && npm install --force && npm run build",
+  "buildCommand": "npm install --force && npm run build",
   "installCommand": "echo done",
   "outputDirectory": "dist",
   "rewrites": [
