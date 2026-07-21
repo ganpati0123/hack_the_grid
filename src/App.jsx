@@ -13,7 +13,7 @@ const EYE_HEIGHT_FRACTION = 0.20
 const WALK_SPEED_FRACTION = 0.35
 const MOUSE_SENSITIVITY   = 0.004
 const SCROLL_ZOOM_SPEED   = 0.4
-const INITIAL_YAW         = -20 * (Math.PI / 180)   // 20° left from entrance
+const INITIAL_YAW         = -90 * (Math.PI / 180)   // 90° left from entrance
 // ─────────────────────────────────────────────────────────────────────────────
 
 let g_eyeHeight = 10
