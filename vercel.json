@@ -1,8 +1,8 @@
 {
-  "buildCommand": "npm install && npm run build",
-  "outputDirectory": "dist",
-  "installCommand": "echo skip",
   "framework": "vite",
+  "buildCommand": "npm install --force && npm run build",
+  "installCommand": "echo done",
+  "outputDirectory": "dist",
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
   ]
